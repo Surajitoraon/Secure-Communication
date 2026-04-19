@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Retro Secure Terminal</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/components.css" />
+
+  <style>
+    /* Anti-screenshot measures */
+    body { user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; }
+    * { -webkit-touch-callout: none; }
+    .video-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.1); pointer-events: none; z-index: 9999; display: none; }
+    video { pointer-events: none; }
+    /* Multi-user video styles */
+    #videoContainer { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 10000; display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; }
+    #videoContainer.hidden { display: none; }
+    #localVideo { width: 150px; height: 112px; position: absolute; bottom: 10px; right: 10px; background: #222; object-fit: cover; }
+    .remote-video { width: calc(33.333% - 8px); max-width: 200px; height: 150px; background: #111; object-fit: cover; }
+    #endCallBtn2 { position: absolute; top: 10px; right: 10px; background: #000; color: #0f0; border: 1px solid #0f0; padding: 8px; cursor: pointer; font-size: 0.9rem; }
+    @media (max-width: 720px) {
+      #localVideo { width: 120px; height: 90px; }
+      .remote-video { width: calc(50% - 8px); max-width: 150px; height: 112px; }
+      #endCallBtn2 { padding: 6px; font-size: 0.8rem; }
+    }
+    @media (max-width: 480px) {
+      #localVideo { width: 100px; height: 75px; }
+      .remote-video { width: calc(50% - 6px); max-width: 120px; height: 90px; }
+      #endCallBtn2 { padding: 4px; font-size: 0.7rem; }
+    }
+    /* Screenshot warning popup */
+    #screenshotPopup { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #000; color: #f00; padding: 20px; border: 1px solid #f00; z-index: 10001; display: none; text-align: center; font-size: 18px; font-family: 'Courier New', monospace; }
+  </style>
+</head>
+<body oncontextmenu="return false;" onselectstart="return false;" ondragstart="return false;">
+  <div class="app-bg">
+    <div class="grid-overlay"></div>
+    <div class="app-shell" role="application" aria-label="Secure Chat">
+      <aside class="sidebar">
+        <div class="brand-panel">
+          <div class="logo" aria-hidden="true"></div>
+          <div>
+            <div class="main">Secure P2P Terminal</div>
+            <div class="sub">AES Chat • Encrypted Link</div>
+          </div>
+        </div>
+
+        <section class="card info-card">
+          <div class="info-title">Encrypted Workspace</div>
+          <p>Unlock the secure room with your private key to start safe messaging, file sharing, and video calls.</p>
+        </section>
+
+        <section class="card status-card">
+          <div class="status-row"><span>Connection</span><strong id="status">Disconnected</strong></div>
+          <div class="status-row"><span>Room</span><strong id="roomLabel">Not joined</strong></div>
+        </section>
+
+        <section class="card actions-card">
+          <div class="action-panel">
+            <label class="label" for="keyInput">Access Key</label>
+            <input id="keyInput" type="password" placeholder="Enter private key" autocomplete="off" />
+          </div>
+          <div class="button-row">
+            <button class="btn" id="unlockBtn" type="button">Connect</button>
+            <button class="btn muted" id="clearBtn" type="button" title="Clear key">Reset</button>
+          </div>
+          <p class="hint">Your access key unlocks the encrypted terminal.</p>
+        </section>
+
+        <footer class="sidebar-footer">
+          <small>End-to-end encryption • P2P media • Secure terminal</small>
+        </footer>
+      </aside>
+
+      <main class="main-panel">
+        <section class="topbar card">
+          <div>
+            <div class="badge">Private Network</div>
+            <h1>Retro Secure Chat</h1>
+            <p class="topbar-copy">A terminal-style encrypted chat space for secure peer-to-peer messaging.</p>
+          </div>
+          <div class="topbar-actions">
+            <button class="icon-btn secondary" id="fileBtn" title="Attach file">📎</button>
+            <button class="icon-btn secondary" id="callBtn" title="Start Video Call">📹</button>
+            <button class="icon-btn secondary hidden" id="endCallBtn" title="End Call">📞</button>
+          </div>
+        </section>
+
+        <section id="chatScreen" class="card chat-screen hidden" aria-hidden="true">
+          <div class="chat-panel">
+            <div class="chat-header-panel">
+              <div class="chat-title">Secure Terminal</div>
+              <div class="chat-subtitle">All messages are encrypted before transmission.</div>
+            </div>
+            <div class="messages" id="chat" role="log" aria-live="polite"></div>
+          </div>
+
+          <div class="input-area">
+            <input id="msg" placeholder="> Type command and press Enter..." maxlength="200" />
+            <button class="icon-btn" id="sendBtn" title="Send">➤</button>
+            <input id="fileInput" type="file" style="display:none" />
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Multi-user Video call UI -->
+    <div id="videoContainer" class="hidden">
+      <video id="localVideo" autoplay muted></video>
+      <div id="remoteVideos"></div>
+      <button id="endCallBtn2">End Call</button>
+    </div>
+    <div class="video-overlay"></div>
+    <div id="screenshotPopup">You can't take screenshot or recording</div>
+  </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const socket = io({ reconnection: true, reconnectionAttempts: 5, timeout: 5000 });
+
+  // UI elements
+  const statusEl = document.getElementById('status');
+  const roomLabel = document.getElementById('roomLabel');
+  const keyInput = document.getElementById('keyInput');
+  const unlockBtn = document.getElementById('unlockBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const chatScreen = document.getElementById('chatScreen');
+  const chatEl = document.getElementById('chat');
+  const scrollTopBtn = document.getElementById('scrollTopBtn');
+  const scrollBottomBtn = document.getElementById('scrollBottomBtn');
+  const msgInput = document.getElementById('msg');
+  const sendBtn = document.getElementById('sendBtn');
+  const fileInput = document.getElementById('fileInput');
+  const fileBtn = document.getElementById('fileBtn');
+  const callBtn = document.getElementById('callBtn');
+  const endCallBtn = document.getElementById('endCallBtn');
+  const videoContainer = document.getElementById('videoContainer');
+  const localVideo = document.getElementById('localVideo');
+  const remoteVideos = document.getElementById('remoteVideos');
+  const endCallBtn2 = document.getElementById('endCallBtn2');
+
+  let privateKey = '';
+  let roomId = '';
+  let joining = false;
+  const peerConns = new Map();
+  const remoteVideoEls = new Map();
+  let localStream = null;
+
+  function setStatus(text) { if (statusEl) statusEl.textContent = text; }
+
+  function setJoining(isJoining) {
+    joining = isJoining;
+    unlockBtn.disabled = isJoining;
+    clearBtn.disabled = isJoining;
+    keyInput.disabled = isJoining;
+    setStatus(isJoining ? 'Joining…' : (privateKey ? 'Unlocked' : (socket.connected ? 'Locked' : 'Disconnected')));
+  }
+
+  function revealChat() {
+    if (chatScreen) {
+      chatScreen.classList.remove('hidden');
+      chatScreen.setAttribute('aria-hidden', 'false');
+    }
+    if (roomLabel) {
+      roomLabel.textContent = roomId ? roomId.slice(0, 8) + '…' : 'Joined';
+    }
+    if (msgInput) msgInput.focus();
+    setStatus('Unlocked');
+  }
+
+  function hideChat() {
+    if (chatScreen) {
+      chatScreen.classList.add('hidden');
+      chatScreen.setAttribute('aria-hidden', 'true');
+    }
+    if (roomLabel) {
+      roomLabel.textContent = 'Not joined';
+    }
+    setStatus(socket.connected ? 'Locked' : 'Disconnected');
+  }
+
+  function safeTextNode(str) { return document.createTextNode(str); }
+
+  function formatTime(ts) {
+    const d = new Date(ts || Date.now());
+    return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  }
+
+  function addBubble(type, contentEl) {
+    try {
+      if (!chatEl) return;
+      const container = document.createElement('div');
+      container.className = 'bubble-row ' + (type === 'you' ? 'you' : 'peer');
+
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble ' + (type === 'you' ? 'you' : 'peer');
+
+      // content wrapper
+      const contentWrap = document.createElement('div');
+      contentWrap.className = 'bubble-content';
+      contentWrap.appendChild(contentEl);
+
+      // timestamp inside the bubble, under the content
+      const ts = document.createElement('div');
+      ts.className = 'bubble-timestamp';
+      ts.textContent = formatTime();
+
+      bubble.appendChild(contentWrap);
+      bubble.appendChild(ts);
+
+      container.appendChild(bubble);
+
+      chatEl.appendChild(container);
+      const maxMessages = 500;
+      if (chatEl.children.length > maxMessages) chatEl.removeChild(chatEl.firstElementChild);
+      container.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      setTimeout(() => bubble.classList.add('visible'), 20);
+    } catch (e) { console.error('addBubble error', e); }
+  }
+
+  // compute room id client-side (SHA-256 hex)
+  function computeRoomId(key) {
+    return CryptoJS.SHA256(key).toString(CryptoJS.enc.Hex);
+  }
+
+  // JOIN
+  function joinNetwork(key, timeoutMs = 8000) {
+    return new Promise((resolve) => {
+      let settled = false;
+      function onResult(data) {
+        if (settled) return;
+        settled = true;
+        socket.off('join_result', onResult);
+        resolve(Boolean(data && data.success));
+      }
+      socket.on('join_result', onResult);
+      const rid = computeRoomId(key);
+      socket.emit('join_network', { room_id: rid });
+
+      setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          socket.off('join_result', onResult);
+          resolve(false);
+        }
+      }, timeoutMs);
+    });
+  }
+
+  // Unlock
+  unlockBtn.addEventListener('click', async () => {
+    if (joining) return;
+    const key = (keyInput && keyInput.value || '').trim();
+    if (!key) { alert('Private key required'); return; }
+    if (!socket.connected) { alert('Not connected to server.'); return; }
+
+    setJoining(true);
+    const ok = await joinNetwork(key);
+    setJoining(false);
+
+    if (ok) {
+      privateKey = key;
+      roomId = computeRoomId(key);
+      revealChat();
+    } else {
+      alert('Unable to join network. Key may be incorrect or server did not respond.');
+      hideChat();
+    }
+  });
+
+  clearBtn.addEventListener('click', () => {
+    if (joining) return;
+    keyInput.value = '';
+    keyInput.disabled = false;
+    privateKey = '';
+    roomId = '';
+    hideChat();
+  });
+
+  // Text encryption functions
+  function encryptText(plain, key) {
+    return CryptoJS.AES.encrypt(plain, key).toString();
+  }
+  function decryptText(ciphertext, key) {
+    try {
+      const bytes = CryptoJS.AES.decrypt(ciphertext, key);
+      return bytes.toString(CryptoJS.enc.Utf8) || null;
+    } catch (e) { return null; }
+  }
+
+  // FILE: read as DataURL and encrypt that string
+  function readFileAsDataURL(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(new Error('file read error'));
+      r.readAsDataURL(file);
+    });
+  }
+
+  // Encrypt a dataURL string and return ciphertext
+  function encryptDataUrl(dataUrl, key) {
+    return CryptoJS.AES.encrypt(dataUrl, key).toString();
+  }
+
+  // Decrypt ciphertext to dataURL string (or null)
+  function decryptToDataUrl(ciphertext, key) {
+    try {
+      const bytes = CryptoJS.AES.decrypt(ciphertext, key);
+      const str = bytes.toString(CryptoJS.enc.Utf8);
+      return str || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // SEND TEXT
+  function sendTextMessage() {
+    if (!privateKey) { alert('Unlock chat first'); return; }
+    const text = (msgInput && msgInput.value || '').trim();
+    if (!text) return;
+    sendBtn.disabled = true;
+    try {
+      const encrypted = encryptText(text, privateKey);
+      console.log('Sending ciphertext (text):', encrypted);
+      socket.emit('send_message', { room_id: roomId, type: 'text', encrypted });
+      // show local plaintext bubble
+      const el = document.createElement('div');
+      el.appendChild(safeTextNode(text));
+      addBubble('you', el);
+      msgInput.value = '';
+      msgInput.focus();
+    } catch (e) {
+      console.error('send error', e);
+      alert('Failed to send message.');
+    } finally {
+      sendBtn.disabled = false;
+    }
+  }
+
+  sendBtn.addEventListener('click', sendTextMessage);
+  msgInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); sendTextMessage(); }
+  });
+
+  const scrollMessagesToTop = () => {
+    if (!chatEl) return;
+    if (chatEl.children.length) {
+      chatEl.children[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+      chatEl.scrollTop = 0;
+    }
+  };
+
+  const scrollMessagesToBottom = () => {
+    if (!chatEl) return;
+    if (chatEl.children.length) {
+      chatEl.children[chatEl.children.length - 1].scrollIntoView({ behavior: 'smooth', block: 'end' });
+    } else {
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+  };
+
+  if (scrollTopBtn) {
+    scrollTopBtn.addEventListener('click', scrollMessagesToTop);
+  }
+
+  if (scrollBottomBtn) {
+    scrollBottomBtn.addEventListener('click', scrollMessagesToBottom);
+  }
+
+  // FILE SEND: read as DataURL, encrypt string, send ciphertext
+  fileBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async (ev) => {
+    const file = (ev.target.files && ev.target.files[0]);
+    if (!file) return;
+    if (!privateKey) { alert('Unlock chat first'); fileInput.value = ''; return; }
+
+    const maxSize = 50 * 1024 * 1024; // allow larger (50MB) — adjust as needed
+    if (file.size > maxSize) {
+      alert('File too large. Max 50 MB for demo.');
+      fileInput.value = '';
+      return;
+    }
+
+    try {
+      console.log('Reading file as DataURL...');
+      const dataUrl = await readFileAsDataURL(file);
+      console.log('DataURL length:', dataUrl.length);
+      // encrypt the entire data URL string (base64 included)
+      const encryptedFile = encryptDataUrl(dataUrl, privateKey);
+      console.log('Sending ciphertext (file) length:', encryptedFile.length);
+      socket.emit('send_message', {
+        room_id: roomId,
+        type: 'file',
+        encrypted_file: encryptedFile,
+        filename: file.name,
+        mime: file.type || 'application/octet-stream'
+      });
+      // show local placeholder bubble
+      const el = document.createElement('div');
+      el.appendChild(safeTextNode('📁 ' + file.name + ' (sent)'));
+      addBubble('you', el);
+    } catch (e) {
+      console.error('file send error', e);
+      alert('Failed to encrypt/send file.');
+    } finally {
+      fileInput.value = '';
+    }
+  });
+
+  // MULTI-USER VIDEO CALL FUNCTIONS
+  async function ensureLocalStream() {
+    if (localStream) return localStream;
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      console.log('Local stream obtained, tracks:', localStream.getTracks().map(t => t.kind));
+      localVideo.srcObject = localStream;
+    } catch (e) {
+      console.error('getUserMedia error:', e);
+      alert('Camera/microphone access denied or unavailable. Please allow permissions and try again.');
+      throw e;
+    }
+    return localStream;
+  }
+
+  function getPeerConnection(peerId) {
+    if (peerConns.has(peerId)) return peerConns.get(peerId);
+
+    console.log('Creating PC for peer:', peerId);
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'turn:turn.anyfirewall.com:443?transport=tcp', username: 'webrtc', credential: 'webrtc' }
+      ]
+    });
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log('Sending ICE to', peerId, event.candidate);
+        socket.emit('send_message', {
+          room_id: roomId,
+          type: 'ice',
+          candidate: event.candidate,
+          from: socket.id,
+          to: peerId
+        });
+      }
+    };
+    pc.ontrack = (event) => {
+      console.log('Received track from', peerId, 'tracks:', event.streams[0].getTracks().map(t => t.kind));
+      const v = remoteVideoEls.get(peerId) || createRemoteVideo(peerId);
+      v.srcObject = event.streams[0];
+      v.play().catch(e => console.warn('Video play failed:', e));
+    };
+    pc.onconnectionstatechange = () => {
+      console.log('PC state for', peerId, ':', pc.connectionState);
+      if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+        cleanupPeer(peerId);
+      }
+    };
+    peerConns.set(peerId, pc);
+    return pc;
+  }
+
+  function createRemoteVideo(peerId) {
+    if (remoteVideoEls.has(peerId)) return remoteVideoEls.get(peerId);
+    console.log('Creating remote video for', peerId);
+    const v = document.createElement('video');
+    v.autoplay = true;
+    v.playsInline = true;
+    v.className = 'remote-video';
+    v.dataset.peer = peerId;
+    remoteVideos.appendChild(v);
+    remoteVideoEls.set(peerId, v);
+    return v;
+  }
+
+  function cleanupPeer(peerId) {
+    console.log('Cleaning up peer:', peerId);
+    const pc = peerConns.get(peerId);
+    if (pc) { pc.close(); peerConns.delete(peerId); }
+    const v = remoteVideoEls.get(peerId);
+    if (v) { v.remove(); remoteVideoEls.delete(peerId); }
+  }
+
+  async function cleanupAllPeers() {
+    [...peerConns.keys()].forEach(cleanupPeer);
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localStream = null;
+    }
+    localVideo.srcObject = null;
+    videoContainer.classList.add('hidden');
+    callBtn.classList.remove('hidden');
+    endCallBtn.classList.add('hidden');
+  }
+
+  async function requestCall() {
+    if (!privateKey) { alert('Unlock chat first'); return; }
+    console.log('Sending call request');
+    socket.emit('send_message', { room_id: roomId, type: 'call_request', from: socket.id });
+    setStatus('Calling...');
+  }
+
+  async function acceptCall(peerId) {
+    console.log('Accepting call from', peerId);
+    await ensureLocalStream();
+    const pc = getPeerConnection(peerId);
+    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    socket.emit('send_message', { room_id: roomId, type: 'call_accept', from: socket.id, to: peerId });
+    videoContainer.classList.remove('hidden');
+    toggleVideoOverlay(true);
+    callBtn.classList.add('hidden');
+    endCallBtn.classList.remove('hidden');
+  }
+
+  callBtn.addEventListener('click', requestCall);
+  endCallBtn.addEventListener('click', async () => {
+    [...peerConns.keys()].forEach(peerId => {
+      socket.emit('send_message', { room_id: roomId, type: 'call_end', from: socket.id, to: peerId });
+    });
+    await cleanupAllPeers();
+  });
+  endCallBtn2.addEventListener('click', async () => {
+    [...peerConns.keys()].forEach(peerId => {
+      socket.emit('send_message', { room_id: roomId, type: 'call_end', from: socket.id, to: peerId });
+    });
+    await cleanupAllPeers();
+  });
+
+  // SOCKET LIFECYCLE
+  socket.on('connect', () => setStatus(privateKey ? 'Unlocked' : 'Locked'));
+  socket.on('disconnect', () => setStatus('Disconnected'));
+  socket.on('reconnect_attempt', () => setStatus('Reconnecting…'));
+  socket.on('reconnect', async () => {
+    setStatus(privateKey ? 'Unlocked' : 'Locked');
+    if (privateKey && chatScreen.classList.contains('hidden')) {
+      setJoining(true);
+      const ok = await joinNetwork(privateKey, 5000);
+      setJoining(false);
+      if (ok) revealChat();
+    }
+  });
+
+  // RECEIVE: decrypt text or file. For files we decrypt to dataURL and convert to blob via fetch()
+  socket.on('receive_message', async (data) => {
+    console.log('Received message:', data.type, data);
+    if (!data || !data.type) {
+      const el = document.createElement('div');
+      el.appendChild(safeTextNode('🔒 Encrypted payload received'));
+      addBubble('peer', el);
+      return;
+    }
+
+    if (data.type === 'text') {
+      if (!privateKey) {
+        const el = document.createElement('div');
+        el.appendChild(safeTextNode('🔒 Message for network (unlock to decrypt)'));
+        addBubble('peer', el);
+        return;
+      }
+      const plain = decryptText(data.encrypted, privateKey);
+      if (plain) {
+        const el = document.createElement('div');
+        el.appendChild(safeTextNode(plain));
+        addBubble('peer', el);
+      } else {
+        const el = document.createElement('div');
+        el.appendChild(safeTextNode('🔒 Unable to decrypt message'));
+        addBubble('peer', el);
+      }
+    } else if (data.type === 'file') {
+      if (!privateKey) {
+        const el = document.createElement('div');
+        el.appendChild(safeTextNode('📁 File received (unlock to download)'));
+        addBubble('peer', el);
+        return;
+      }
+      // decrypt to dataURL string
+      console.log('Decrypting file...');
+      const dataUrl = decryptToDataUrl(data.encrypted_file, privateKey);
+      if (!dataUrl) {
+        console.error('Decryption failed for file');
+        const el = document.createElement('div');
+        el.appendChild(safeTextNode('🔒 Unable to decrypt file'));
+        addBubble('peer', el);
+        return;
+      }
+      console.log('Decrypted dataURL length:', dataUrl.length);
+      try {
+        // convert dataURL to blob using fetch
+        console.log('Converting dataURL to blob...');
+        const resp = await fetch(dataUrl);
+        const blob = await resp.blob();
+        console.log('Blob size:', blob.size);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = data.filename || 'file.bin';
+        a.textContent = '📁 Download ' + (data.filename || 'file');
+        a.style.color = 'inherit';
+        const el = document.createElement('div');
+        el.appendChild(a);
+        addBubble('peer', el);
+        // revoke after a short delay
+        setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
+      } catch (e) {
+        console.error('convert dataURL->blob error', e);
+        const el = document.createElement('div');
+        el.appendChild(safeTextNode('🔒 Unable to prepare file for download'));
+        addBubble('peer', el);
+      }
+    } else if (data.type === 'call_request') {
+      if (data.from !== socket.id) {
+        console.log('Received call request from', data.from);
+        const accept = confirm('Incoming video call. Accept?');
+        if (accept) {
+          await acceptCall(data.from);
+        } else {
+          socket.emit('send_message', { room_id: roomId, type: 'call_reject', from: socket.id, to: data.from });
+        }
+      }
+    } else if (data.type === 'call_accept') {
+      if (data.to === socket.id) {
+        console.log('Call accepted by', data.from);
+        await ensureLocalStream();
+        const pc = getPeerConnection(data.from);
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        console.log('Sending offer to', data.from);
+        socket.emit('send_message', { room_id: roomId, type: 'offer', from: socket.id, to: data.from, offer });
+        videoContainer.classList.remove('hidden');
+        toggleVideoOverlay(true);
+        callBtn.classList.add('hidden');
+        endCallBtn.classList.remove('hidden');
+      }
+    } else if (data.type === 'call_reject') {
+      if (data.to === socket.id) {
+        console.log('Call rejected by', data.from);
+        alert('Call rejected by peer.');
+        setStatus('Call rejected');
+      }
+    } else if (data.type === 'offer') {
+      if (data.to === socket.id) {
+        console.log('Received offer from', data.from);
+        const pc = getPeerConnection(data.from);
+        await ensureLocalStream();
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        console.log('Sending answer to', data.from);
+        socket.emit('send_message', { room_id: roomId, type: 'answer', from: socket.id, to: data.from, answer });
+        videoContainer.classList.remove('hidden');
+        toggleVideoOverlay(true);
+        callBtn.classList.add('hidden');
+        endCallBtn.classList.remove('hidden');
+      }
+    } else if (data.type === 'answer') {
+      if (data.to === socket.id && peerConns.has(data.from)) {
+        console.log('Received answer from', data.from);
+        const pc = peerConns.get(data.from);
+        await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+      }
+    } else if (data.type === 'ice') {
+      if (data.to === socket.id && peerConns.has(data.from)) {
+        console.log('Received ICE from', data.from);
+        const pc = peerConns.get(data.from);
+        try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); }
+        catch (e) { console.warn('ICE add failed', e); }
+      }
+    } else if (data.type === 'call_end') {
+      if (data.to === socket.id) {
+        console.log('Call ended by', data.from);
+        cleanupPeer(data.from);
+        if (!peerConns.size) await cleanupAllPeers();
+      }
+    } else {
+      const el = document.createElement('div');
+      el.appendChild(safeTextNode('🔒 Unknown payload type'));
+      addBubble('peer', el);
+    }
+  });
+
+  // Anti-screenshot functionality
+  const screenshotPopup = document.getElementById('screenshotPopup');
+  const videoOverlay = document.querySelector('.video-overlay');
+
+  function showScreenshotPopup() {
+    screenshotPopup.style.display = 'block';
+    setTimeout(() => {
+      screenshotPopup.style.display = 'none';
+    }, 3000); // Hide after 3 seconds
+  }
+
+  // Detect print screen key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'PrintScreen' || e.keyCode === 44 || e.keyCode === 124) {
+      e.preventDefault();
+      showScreenshotPopup();
+    }
+  });
+
+  // Detect right-click (already disabled, but extra)
+  document.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showScreenshotPopup();
+  });
+
+  // Show overlay during video calls
+  function toggleVideoOverlay(show) {
+    videoOverlay.style.display = show ? 'block' : 'none';
+  }
+
+  // Modify acceptCall and requestCall to show overlay
+  const originalAcceptCall = acceptCall;
+  acceptCall = async (peerId) => {
+    await originalAcceptCall(peerId);
+    toggleVideoOverlay(true);
+  };
+
+  const originalRequestCall = requestCall;
+  requestCall = async () => {
+    await originalRequestCall();
+    toggleVideoOverlay(true);
+  };
+
+  // Hide overlay when call ends
+  const originalCleanupAllPeers = cleanupAllPeers;
+  cleanupAllPeers = async () => {
+    await originalCleanupAllPeers();
+    toggleVideoOverlay(false);
+  };
+
+  // initial UI
+  hideChat();
+  setStatus(socket.connected ? 'Locked' : 'Disconnected');
+});
+</script>
+</body>
+</html>
