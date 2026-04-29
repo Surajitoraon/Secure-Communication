@@ -1,4 +1,5 @@
 
+import os
 from flask import Flask, render_template
 from flask_socketio import SocketIO, emit, join_room
 
@@ -42,4 +43,5 @@ def relay(data):
     emit("receive_message", out, room=room, include_self=False)
 
 if __name__ == "__main__":
-    socketio.run(app, debug=True, port = 5050)
+    port = int(os.environ.get("PORT", 5050))
+    socketio.run(app, host="0.0.0.0", port=port)
